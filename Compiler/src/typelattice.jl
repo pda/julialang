@@ -6,7 +6,7 @@
 
 # N.B.: Const/PartialStruct/InterConditional are defined in Core, to allow them to be used
 # inside the global code cache.
-import Core: Const, InterConditional, PartialStruct
+import Core: Const, InterConditional, PartialStruct, ConstSet
 
 """
     cnd::Conditional
@@ -670,6 +670,7 @@ Widens extended lattice element `x` to native `Type` representation.
 widenconst(::AnyConditional) = Bool
 widenconst(a::AnyMustAlias) = widenconst(widenmustalias(a))
 widenconst(c::Const) = (v = c.val; isa(v, Type) ? Type{v} : typeof(v))
+widenconst(c::ConstSet) = error("unhandled ConstSet") # anymap(v->widenconst(v))
 widenconst(::PartialTypeVar) = TypeVar
 widenconst(t::Core.PartialStruct) = t.typ
 widenconst(t::PartialOpaque) = t.typ
@@ -745,4 +746,8 @@ function Core.PartialStruct(::AbstractLattice, @nospecialize(typ), fields::Vecto
         assert_nested_slotwrapper(fields[i])
     end
     return Core._PartialStruct(typ, fields)
+end
+
+function Core.ConstSet(@nospecialize(a), @nospecialize(b))
+    return Core._ConstSet(Any[a, b])
 end
