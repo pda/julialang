@@ -488,14 +488,13 @@ function finishinfer!(me::InferenceState, interp::AbstractInterpreter)
 end
 
 # record the backedges
-function store_backedges(caller::CodeInstance, edges::Vector{Any})
+function store_backedges(caller::CodeInstance, edges::Union{Vector{Any},SimpleVector})
     isa(caller.def.def, Method) || return # don't add backedges to toplevel method instance
-    for itr in BackedgeIterator(edges)
-        callee = itr.caller
+    for (; callee, sig) in BackedgeIterator(edges)
         if isa(callee, MethodInstance)
-            ccall(:jl_method_instance_add_backedge, Cvoid, (Any, Any, Any), callee, itr.sig, caller)
+            ccall(:jl_method_instance_add_backedge, Cvoid, (Any, Any, Any), callee, sig, caller)
         else
-            ccall(:jl_method_table_add_backedge, Cvoid, (Any, Any, Any), callee, itr.sig, caller)
+            ccall(:jl_method_table_add_backedge, Cvoid, (Any, Any, Any), callee, sig, caller)
         end
     end
     nothing
