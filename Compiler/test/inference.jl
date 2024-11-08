@@ -6088,3 +6088,19 @@ function issue56387(nt::NamedTuple, field::Symbol=:a)
     types[index]
 end
 @test Base.infer_return_type(issue56387, (typeof((;a=1)),)) == Type{Int}
+
+@test Base.infer_return_type((Bool,Int,)) do b, y
+    x = b ? 1 : missing
+    inner = y -> x + y
+    return inner(y)
+end == Union{Int,Missing}
+
+function issue31909(ys)
+    x = if @noinline rand(Bool)
+        1
+    else
+        missing
+    end
+    map(y -> x + y, ys)
+end
+@test_broken Base.infer_return_type(issue31909, (Vector{Int},)) == Vector{Union{Int,Missing}}
