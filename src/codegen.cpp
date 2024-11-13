@@ -5497,11 +5497,9 @@ static jl_cgval_t emit_invoke(jl_codectx_t &ctx, const jl_cgval_t &lival, ArrayR
     jl_cgval_t result;
     if (lival.constant) {
         jl_method_instance_t *mi;
-        jl_value_t *ci = jl_nothing;
+        jl_value_t *ci = nullptr;
         if (jl_is_method_instance(lival.constant)) {
             mi = (jl_method_instance_t*)lival.constant;
-            if (mi != ctx.linfo)
-                ci = ctx.params->lookup(mi, ctx.min_world, ctx.max_world);
         }
         else {
             ci = lival.constant;
@@ -5525,7 +5523,7 @@ static jl_cgval_t emit_invoke(jl_codectx_t &ctx, const jl_cgval_t &lival, ArrayR
             }
         }
         else {
-            if (ci != jl_nothing) {
+            if (ci) {
                 jl_code_instance_t *codeinst = (jl_code_instance_t*)ci;
                 auto invoke = jl_atomic_load_acquire(&codeinst->invoke);
                  // check if we know how to handle this specptr

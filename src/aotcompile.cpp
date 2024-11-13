@@ -449,7 +449,7 @@ void *jl_create_native_impl(jl_array_t *methods, LLVMOrcThreadSafeModuleRef llvm
     if (cgparams == NULL)
         cgparams = &jl_default_cgparams;
     if (lookup == NULL)
-        lookup = cgparams->lookup;
+        lookup = &jl_rettype_inferred_native;
     jl_native_code_desc_t *data = new jl_native_code_desc_t;
     CompilationPolicy policy = (CompilationPolicy) _policy;
     bool imaging = imaging_default() || _imaging_mode == 1;
