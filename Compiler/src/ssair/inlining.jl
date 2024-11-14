@@ -775,19 +775,18 @@ end
 
 function compileable_specialization(code::Union{MethodInstance,CodeInstance}, effects::Effects,
     et::InliningEdgeTracker, @nospecialize(info::CallInfo), state::InliningState)
-    mi_invoke = code isa CodeInstance ? code.def : code
-    mi = mi_invoke
+    mi = code isa CodeInstance ? code.def : code
+    mi_invoke = mi
     method, atype, sparams = mi.def::Method, mi.specTypes, mi.sparam_vals
     if OptimizationParams(state.interp).compilesig_invokes
         new_atype = get_compileable_sig(method, atype, sparams)
         new_atype === nothing && return nothing
         if atype !== new_atype
             sp_ = ccall(:jl_type_intersection_with_env, Any, (Any, Any), new_atype, method.sig)::SimpleVector
-            if sparams === sp_[2]::SimpleVector
-                mi_invoke = specialize_method(method, new_atype, sparams)
-                code = mi_invoke
-                mi_invoke === nothing && return nothing
-            end
+            sparams = sp_[2]::SimpleVector
+            mi_invoke = specialize_method(method, new_atype, sparams)
+            mi_invoke === nothing && return nothing
+            code = mi_invoke
         end
     else
         # If this caller does not want us to optimize calls to use their
@@ -797,15 +796,19 @@ function compileable_specialization(code::Union{MethodInstance,CodeInstance}, ef
             return nothing
         end
     end
-    # TODO: use code directly if possible (e.g. if it was not rejected due to LimitedAccuracy, and kept around only for the edges)
-    code = get(code_cache(state), mi_invoke, nothing)
-    if !(code isa CodeInstance)
-        #println("missing code for ", mi_invoke, " for ", mi)
-        code = mi_invoke
+    if !isa(code, CodeInstance)
+        # TODO: can this code be gotten directly from inference?
+        code = get(code_cache(state), mi_invoke, nothing)
+        if !(code isa CodeInstance)
+            #println("missing code for ", mi_invoke, " for ", mi)
+            code = mi_invoke
+        end
     end
-    add_inlining_edge!(et, mi) # to the dispatch lookup
-    if mi_invoke !== mi
-        add_invoke_edge!(et.edges, method.sig, mi_invoke) # add_inlining_edge to the invoke call, if that is different
+    if mi_invoke === mi
+        add_inlining_edge!(et, code) # to the dispatch lookup and edges
+    else
+        add_inlining_edge!(et, mi) # to the dispatch lookup
+        add_invoke_edge!(et.edges, method.sig, code) # add_inlining_edge to the invoke call edges, since that is different
     end
     return InvokeCase(code, effects, info)
 end
@@ -865,7 +868,7 @@ function resolve_todo(mi::MethodInstance, result::Union{Nothing,InferenceResult,
         src = @atomic :monotonic inferred_result.inferred
         effects = decode_effects(inferred_result.ipo_purity_bits)
         edge = inferred_result
-    else # there is no cached source available, bail out
+    else # there is no cached source available for this, but there might be code for the compilation sig
         return compileable_specialization(mi, Effects(), et, info, state)
     end
 
@@ -1546,9 +1549,7 @@ function handle_modifyop!_call!(ir::IRCode, idx::Int, stmt::Expr, info::ModifyOp
     match = info.results[1]::MethodMatch
     match.fully_covers || return nothing
     edge = info.edges[1]
-    if edge === nothing
-        edge = specialize_method(match)
-    end
+    edge === nothing && return nothing
     case = compileable_specialization(edge, Effects(), InliningEdgeTracker(state), info, state)
     case === nothing && return nothing
     stmt.head = :invoke_modify
