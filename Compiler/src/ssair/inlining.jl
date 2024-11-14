@@ -38,7 +38,7 @@ struct SomeCase
 end
 
 struct InvokeCase
-    invoke::MethodInstance
+    invoke::Union{CodeInstance,MethodInstance}
     effects::Effects
     info::CallInfo
 end
@@ -70,7 +70,7 @@ struct InliningEdgeTracker
 end
 
 function add_inlining_edge!(et::InliningEdgeTracker, edge::Union{CodeInstance,MethodInstance})
-    (; edges, invokesig) = et
+    (; invokesig, edges) = et
     if invokesig === nothing
         add_one_edge!(edges, edge)
     else # invoke backedge
@@ -773,9 +773,10 @@ function rewrite_apply_exprargs!(todo::Vector{Pair{Int,Any}},
     return new_argtypes
 end
 
-function compileable_specialization(mi::MethodInstance, effects::Effects,
+function compileable_specialization(code::Union{MethodInstance,CodeInstance}, effects::Effects,
     et::InliningEdgeTracker, @nospecialize(info::CallInfo), state::InliningState)
-    mi_invoke = mi
+    mi_invoke = code isa CodeInstance ? code.def : code
+    mi = mi_invoke
     method, atype, sparams = mi.def::Method, mi.specTypes, mi.sparam_vals
     if OptimizationParams(state.interp).compilesig_invokes
         new_atype = get_compileable_sig(method, atype, sparams)
@@ -784,6 +785,7 @@ function compileable_specialization(mi::MethodInstance, effects::Effects,
             sp_ = ccall(:jl_type_intersection_with_env, Any, (Any, Any), new_atype, method.sig)::SimpleVector
             if sparams === sp_[2]::SimpleVector
                 mi_invoke = specialize_method(method, new_atype, sparams)
+                code = mi_invoke
                 mi_invoke === nothing && return nothing
             end
         end
@@ -795,11 +797,17 @@ function compileable_specialization(mi::MethodInstance, effects::Effects,
             return nothing
         end
     end
+    # TODO: use code directly if possible (e.g. if it was not rejected due to LimitedAccuracy, and kept around only for the edges)
+    code = get(code_cache(state), mi_invoke, nothing)
+    if !(code isa CodeInstance)
+        #println("missing code for ", mi_invoke, " for ", mi)
+        code = mi_invoke
+    end
     add_inlining_edge!(et, mi) # to the dispatch lookup
     if mi_invoke !== mi
         add_invoke_edge!(et.edges, method.sig, mi_invoke) # add_inlining_edge to the invoke call, if that is different
     end
-    return InvokeCase(mi_invoke, effects, info)
+    return InvokeCase(code, effects, info)
 end
 
 struct InferredResult
@@ -864,11 +872,11 @@ function resolve_todo(mi::MethodInstance, result::Union{Nothing,InferenceResult,
     # the duplicated check might have been done already within `analyze_method!`, but still
     # we need it here too since we may come here directly using a constant-prop' result
     if !OptimizationParams(state.interp).inlining || is_stmt_noinline(flag)
-        return compileable_specialization(edge.def, effects, et, info, state)
+        return compileable_specialization(edge, effects, et, info, state)
     end
 
     src_inlining_policy(state.interp, src, info, flag) ||
-        return compileable_specialization(edge.def, effects, et, info, state)
+        return compileable_specialization(edge, effects, et, info, state)
 
     add_inlining_edge!(et, edge)
     if inferred_result isa CodeInstance
@@ -1437,7 +1445,8 @@ end
 
 function semiconcrete_result_item(result::SemiConcreteResult,
         @nospecialize(info::CallInfo), flag::UInt32, state::InliningState)
-    mi = result.edge.def
+    code = result.edge
+    mi = code.def
     et = InliningEdgeTracker(state)
 
     if (!OptimizationParams(state.interp).inlining || is_stmt_noinline(flag) ||
@@ -1445,10 +1454,10 @@ function semiconcrete_result_item(result::SemiConcreteResult,
         # a `@noinline`-declared method when it's marked as `@constprop :aggressive`.
         # Suppress the inlining here (unless inlining is requested at the callsite).
         (is_declared_noinline(mi.def::Method) && !is_stmt_inline(flag)))
-        return compileable_specialization(mi, result.effects, et, info, state)
+        return compileable_specialization(code, result.effects, et, info, state)
     end
     src_inlining_policy(state.interp, result.ir, info, flag) ||
-        return compileable_specialization(mi, result.effects, et, info, state)
+        return compileable_specialization(code, result.effects, et, info, state)
 
     add_inlining_edge!(et, result.edge)
     preserve_local_sources = OptimizationParams(state.interp).preserve_local_sources
@@ -1481,7 +1490,7 @@ function concrete_result_item(result::ConcreteResult, @nospecialize(info::CallIn
     invokesig::Union{Nothing,Vector{Any}}=nothing)
     if !may_inline_concrete_result(result)
         et = InliningEdgeTracker(state, invokesig)
-        return compileable_specialization(result.edge.def, result.effects, et, info, state)
+        return compileable_specialization(result.edge, result.effects, et, info, state)
     end
     @assert result.effects === EFFECTS_TOTAL
     return ConstantCase(quoted(result.result), result.edge)
@@ -1539,8 +1548,6 @@ function handle_modifyop!_call!(ir::IRCode, idx::Int, stmt::Expr, info::ModifyOp
     edge = info.edges[1]
     if edge === nothing
         edge = specialize_method(match)
-    else
-        edge = edge.def
     end
     case = compileable_specialization(edge, Effects(), InliningEdgeTracker(state), info, state)
     case === nothing && return nothing
@@ -1579,8 +1586,11 @@ function handle_finalizer_call!(ir::IRCode, idx::Int, stmt::Expr, info::Finalize
         # `Core.Compiler` data structure into the global cache
         item1 = cases[1].item
         if isa(item1, InliningTodo)
-            push!(stmt.args, true)
-            push!(stmt.args, item1.mi)
+            code = get(code_cache(state), item1.mi, nothing) # COMBAK: this seems like a bad design, can we use stmt_info instead to store the correct info?
+            if code isa CodeInstance
+                push!(stmt.args, true)
+                push!(stmt.args, code)
+            end
         elseif isa(item1, InvokeCase)
             push!(stmt.args, false)
             push!(stmt.args, item1.invoke)
@@ -1593,7 +1603,10 @@ end
 
 function handle_invoke_expr!(todo::Vector{Pair{Int,Any}}, ir::IRCode,
     idx::Int, stmt::Expr, @nospecialize(info::CallInfo), flag::UInt32, sig::Signature, state::InliningState)
-    mi = stmt.args[1]::MethodInstance
+    mi = stmt.args[1]
+    if !(mi isa MethodInstance)
+        mi = (mi::CodeInstance).def
+    end
     case = resolve_todo(mi, info, flag, state)
     handle_single_case!(todo, ir, idx, stmt, case, false)
     return nothing

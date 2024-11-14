@@ -444,9 +444,10 @@ function finishinfer!(me::InferenceState, interp::AbstractInterpreter)
     maybe_validate_code(me.linfo, me.src, "inferred")
 
     # finish populating inference results into the CodeInstance if possible, and maybe cache that globally for use elsewhere
-    if isdefined(result, :ci) && !limited_ret
+    if isdefined(result, :ci)
         result_type = result.result
-        @assert !(result_type === nothing || result_type isa LimitedAccuracy)
+        result_type isa LimitedAccuracy && (result_type = result_type.typ)
+        @assert !(result_type === nothing)
         if isa(result_type, Const)
             rettype_const = result_type.val
             const_flags = is_result_constabi_eligible(result) ? 0x3 : 0x2

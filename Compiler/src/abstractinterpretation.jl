@@ -251,11 +251,11 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(f),
                     if mi === nothing || !const_prop_methodinstance_heuristic(interp, mi, arginfo, sv)
                         csig = get_compileable_sig(method, sig, match.sparams)
                         if csig !== nothing && (!seenall || csig !== sig) # corresponds to whether the first look already looked at this, so repeating abstract_call_method is not useful
+                            #println(sig, " changed to ", csig, " for ", method)
                             sp_ = ccall(:jl_type_intersection_with_env, Any, (Any, Any), csig, method.sig)::SimpleVector
-                            if match.sparams === sp_[2]
-                                mresult = abstract_call_method(interp, method, csig, match.sparams, multiple_matches, StmtInfo(false), sv)::Future
-                                isready(mresult) || return false # wait for mresult Future to resolve off the callstack before continuing
-                            end
+                            sparams = sp_[2]::SimpleVector
+                            mresult = abstract_call_method(interp, method, csig, sparams, multiple_matches, StmtInfo(false), sv)::Future
+                            isready(mresult) || return false # wait for mresult Future to resolve off the callstack before continuing
                         end
                     end
                 end
